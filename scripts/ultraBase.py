@@ -12,6 +12,10 @@ from nav_msgs.msg import Odometry
 from tf.transformations import euler_from_quaternion
 from cv_bridge import CvBridge, CvBridgeError
 
+from mobilenet import net, CLASSES, CONFIDANCE, COLORS, detect
+
+from std_msgs.msg import Float64
+
 """ 
 Rode cada linha em um terminal diferente
 	rosrun modulo4 [nome_do_script].py
@@ -53,10 +57,12 @@ class Control():
 		self.destination = (-1, -1) # Camera coords for the destination, which will be followed by the robot (x, y)
 
 		# State management
-		self.robot_state = 'initial'
+		self.robot_state = 'goto'
 		self.state_machine = {
 			'initial': self.initial_state,
-			'turn': self.turn_state
+			'turn': self.turn_state,
+			'goto': self.goto_state,
+			'stop': self.stop_state
 		}
 
 		# Subscribers
@@ -66,6 +72,17 @@ class Control():
 
 		# Publishers
 		self.speed_publisher = rospy.Publisher('cmd_vel', Twist, queue_size=3)
+		# Para habilitar controle da garra: roslaunch mybot_description mybot_control2.launch
+		self.braco = rospy.Publisher("/joint1_position_controller/command", Float64, queue_size=1)
+		self.pinca = rospy.Publisher("/joint2_position_controller/command", Float64, queue_size=1)
+		'''
+		self.braco.publish(-1.0)       # para baixo
+		self.braco.publish(1.5)        # para cima
+		self.braco.publish(0.0)        # para frente
+
+		self.pinca.publish(0.0)        # fechado
+		self.pinca.publish(-1.0)       # fechado
+		'''
 
 	# Getters
 	def get_odometry_position(self, round_to=3):
@@ -122,6 +139,8 @@ class Control():
 		self.color_segmentation(cv_image)
 		self.generate_Aruco(cv_image)
 
+		self.resultsMobilenet = detect(net, cv_image, CONFIDANCE, COLORS, CLASSES)[1]
+
 	def odometry_callback(self, data: Odometry):
 		self.odometry = data
 		# self.x = data.pose.pose.position.x
@@ -142,26 +161,61 @@ class Control():
 	def laser_callback(self, msg: LaserScan):
 		self.laser_data = np.array(msg.ranges).round(decimals=2) # Converte para np.array e arredonda para 2 casas decimais
 		self.laser_data[self.laser_data == 0] = np.inf
+	
+	def get_angular_error(self):
+		kp = 0.05
+
+		#Turtlebot goto (cX, cY)
+		cX = 1
+		cY = -2
+
+		x = cX - self.get_odometry_position()[0]
+		y = cY - self.get_odometry_position()[1]
+		theta = np.arctan2(y,x)
+
+		self.distance = np.sqrt(x**2+y**2)
+		self.err = np.rad2deg(theta - self.yaw)
+		self.err = (self.err+180) % 360 - 180
+
+		self.twist.angular.z = self.err * kp
+
+		print(self.err)
 
 	# State functions
 	def initial_state(self):
-		self.twist.angular.z = 0
-		self.twist.linear.x  = 0
-		pass
+		if self.destination[0] != -1:
+			err = self.image_shape[1]/2 - self.destination[0]
+			self.twist.angular.z = err/self.kp
+			self.twist.linear.x = 0.2
+		if self.get_odometry_position()[1] >= -1.961:
+			self.robot_state = "turn"
+		
 
 	def turn_state(self):
 		self.twist.linear.x = 0
-		self.twist.angular.z = -0.1
-		pass
+		self.twist.angular.z = 0.1
+	
+	def goto_state(self):
+		self.get_angular_error()
+		self.twist.linear.x = 0.2
+		
+		if self.distance < 0.1:
+			self.robot_state = "stop"
+
+	def stop_state(self):
+		self.twist.linear.x = 0
+		self.twist.angular.z = 0
+		
 		
 	
 	def control(self) -> None:
 		'''
 		This function is called at least at {self.rate} Hz.
 		'''
+		#print(self.resultsMobilenet)
 		print(f"Current robot state: {self.robot_state}")
-		print(f"Odometry position (x, y, z): {self.get_odometry_position()}")
-		print(f"Laser reading: {self.get_front_laser_scan()}")
+		#print(f"Odometry position (x, y, z): {self.get_odometry_position()}")
+		#print(f"Laser reading: {self.get_front_laser_scan()}")
 		self.state_machine[self.robot_state]()
 		
 		self.speed_publisher.publish(self.twist)
