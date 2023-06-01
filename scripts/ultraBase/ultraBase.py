@@ -12,9 +12,12 @@ Ele implementa:
     --> Aruco markers
     --> MobileNet detection
     --> Garra
+    
+    --> Follow line simples (erro angular e KP)
 
 Ele NÃO implementa:
-	--> Follow line
+	--> Girar x graus (is_within_angular_threshold())
+	--> Máscaras dos creepers
     --> Regressão linear
     --> Publicação de tópicos personalizados em arquivos diferentes
 """
@@ -92,9 +95,10 @@ class Control():
 		self.mobilenet_results = None
 
 		# State management
-		self.robot_state = 'initial'
+		self.robot_state = 'follow_line'
 		self.state_machine = {
 			'initial': self.initial_state,
+			'follow_line': self.follow_line_state,
 			'center_waypoint': self.center_waypoint_state,
 			'go_to_waypoint': self.go_to_waypoint_state,
 		}
@@ -250,6 +254,19 @@ class Control():
 		self.twist.angular.z = 0
 		self.twist.linear.x  = 0
 		pass
+
+	def follow_line_state(self):
+		height, width = self.image_shape
+		x, y          = self.destination
+		
+		if x != -1:
+			error = width / 2 - x
+			self.twist.angular.z = error / self.kp
+			self.twist.linear.x  = 0.1
+
+		else:
+			self.twist.angular.z = 0
+			self.twist.linear.x = 0
 
 	def center_waypoint_state(self):
 		# Part of the goTo() strategy
